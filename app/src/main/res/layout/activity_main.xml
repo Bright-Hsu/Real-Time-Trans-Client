@@ -19,9 +19,10 @@
         android:id="@+id/input_IP"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:hint="请输入服务器IP"
+        android:hint="请输入服务器IP (默认192.168.1.102)"
         android:minHeight="48dp"
         android:singleLine="true"
+        android:selectAllOnFocus="true"
         android:textColorHint="#95A1AA" />
 
     <Button

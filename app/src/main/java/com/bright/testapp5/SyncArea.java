@@ -19,7 +19,10 @@ public class SyncArea {
             YuvImage image = new YuvImage(data, format, size.width, size.height, null);
             ByteArrayOutputStream baos = new ByteArrayOutputStream();
             // 设置图片质量和尺寸，将NV21格式图片压缩成Jpeg，并得到JPEG数据流
-            image.compressToJpeg(new Rect(0, 0, size.width, size.height), 80, baos);
+            if(!image.compressToJpeg(new Rect(0, 0, size.width, size.height), 100, baos)){
+                Log.e(TAG, "onPreviewFrame Yuv Image compressToJpeg failed");
+                return;
+            }
             byte[] imageData = baos.toByteArray();
             // 发送图片大小
             DataOutputStream dos = new DataOutputStream(socket.getOutputStream());

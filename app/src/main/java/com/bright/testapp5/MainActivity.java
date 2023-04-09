@@ -5,12 +5,19 @@ import android.app.AlertDialog;
 import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.ImageFormat;
 import android.graphics.Rect;
 import android.graphics.YuvImage;
 import android.hardware.Camera;
 import android.os.Bundle;
 import android.provider.Settings;
+import android.renderscript.Allocation;
+import android.renderscript.Element;
+import android.renderscript.RenderScript;
+import android.renderscript.ScriptIntrinsicYuvToRGB;
+import android.renderscript.Type;
 import android.util.DisplayMetrics;
 import android.util.Log;
 import android.view.Menu;
@@ -20,6 +27,7 @@ import android.view.SurfaceView;
 import android.view.View;
 import android.view.WindowManager;
 import android.widget.Button;
+import android.widget.EditText;
 import android.widget.Toast;
 
 import androidx.annotation.NonNull;
@@ -41,6 +49,7 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
     private Camera mCamera = null; // Camera对象，相机预览
     private Button myBtn01 = null; // 按钮btn_connect
     private Button myBtn02 = null; // 按钮btn_trans
+    private EditText myEdit01 = null; // 编辑框edit_ip
     private int screenWidth = 640; // 屏幕宽度
     private int screenHeight = 480; // 屏幕高度
     private boolean isSending = false; // 是否在发送视频中
@@ -52,6 +61,12 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
     private OutputStream outputStream;
 
     private static byte byteBuffer[] = new byte[1024]; // 用于存放图片数据
+
+
+    private RenderScript rs;
+    private ScriptIntrinsicYuvToRGB yuvToRgbIntrinsic;
+    private Type.Builder yuvType, rgbaType;
+    private Allocation in, out;
 
 
     private static final String[] permission = new String[] {
@@ -84,6 +99,10 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
         getWindow().setFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON,
                 WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
 
+
+        rs = RenderScript.create(this);
+        yuvToRgbIntrinsic = ScriptIntrinsicYuvToRGB.create(rs, Element.U8_4(rs));
+
         // Android 6.0相机动态权限检查
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)== PackageManager.PERMISSION_GRANTED){
         }else {
@@ -107,6 +126,15 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
         // 打印屏幕分辨率
         Log.i(TAG, "屏幕分辨率: " + screenWidth + "x" + screenHeight);
 
+        // 获得输入框的输入
+        myEdit01 = findViewById(R.id.input_IP);
+        String inputIP = myEdit01.getText().toString();
+        if (inputIP.length() > 0 && checkValidIP(inputIP)) {
+            serverIP = inputIP;
+        }
+        // 打印输入框的输入
+        Log.i(TAG, "输入框输入的IP: " + inputIP + "serverIP: " + serverIP);
+
         myBtn01.setOnClickListener(new Button.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -127,6 +155,19 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
                     Log.i(TAG, "myBtn01 断开连接: " + serverIP + ":" + serverPort);
                 }
                 else {  //如果没有连接,则开始连接
+                    String inputIP = myEdit01.getText().toString();
+                    if (inputIP.length() > 0 && checkValidIP(inputIP)) {
+                        serverIP = inputIP;
+                        // 打印输入框的输入
+                        Log.i(TAG, "输入框输入的IP: " + inputIP + "serverIP: " + serverIP);
+                    }
+                    else if (inputIP.length() > 0 && !checkValidIP(inputIP)){
+                        displayToast("请输入正确的IP地址!");
+                        // 打印输入框的输入
+                        Log.i(TAG, "输入框输入的IP: " + inputIP + "serverIP: " + serverIP);
+                        return;
+                    }
+
                     new Thread(new Runnable() {
                         @Override
                         public void run() {
@@ -228,21 +269,54 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
                     @Override
                     public void run() {
                         try {
+                            if (yuvType == null)
+                            {
+                                yuvType = new Type.Builder(rs, Element.U8(rs)).setX(data.length);
+                                in = Allocation.createTyped(rs, yuvType.create(), Allocation.USAGE_SCRIPT);
+
+                                rgbaType = new Type.Builder(rs, Element.RGBA_8888(rs)).setX(size.width).setY(size.height);
+                                out = Allocation.createTyped(rs, rgbaType.create(), Allocation.USAGE_SCRIPT);
+                            }
+                            in.copyFrom(data);
+                            yuvToRgbIntrinsic.setInput(in);
+                            yuvToRgbIntrinsic.forEach(out);
+                            Bitmap bitmap = Bitmap.createBitmap(size.width, size.height, Bitmap.Config.ARGB_8888);
+                            out.copyTo(bitmap);
+                            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                            // 设置图片质量和尺寸，将NV21格式图片压缩成Jpeg，并得到JPEG数据流
+                            if(!bitmap.compress(Bitmap.CompressFormat.JPEG, 100, baos)){
+                                Log.e(TAG, "onPreviewFrame: compress yuv to jpg failed!");
+                                return;
+                            }
+
+                            byte[] imageData = baos.toByteArray();
+                            // 发送图片大小
+                            DataOutputStream dos = new DataOutputStream(socket.getOutputStream());
+                            dos.writeInt(baos.toByteArray().length);
+                            dos.flush();
+                            // 发送图片数据
+                            outputStream = socket.getOutputStream();
+                            outputStream.write(imageData);
+                            outputStream.flush();
+                            baos.flush();
+                            baos.close();
+                            Log.d(TAG, "onPreviewFrame jpeg size: " + imageData.length);
+                        } catch (IOException e) {
+                            // 打印错误信息
+                            Log.e(TAG, "onPreviewFrame Error: " + e.getMessage());
+                            e.printStackTrace();
+                        }
+                    }
+                }).start(); */
+                /*
+                new Thread(new Runnable() {
+                    @Override
+                    public void run() {
+                        try {
                             YuvImage image = new YuvImage(data, format, size.width, size.height, null);
                             ByteArrayOutputStream baos = new ByteArrayOutputStream();
                             // 设置图片质量和尺寸，将NV21格式图片压缩成Jpeg，并得到JPEG数据流
                             image.compressToJpeg(new Rect(0, 0, size.width, size.height), 80, baos);
-//                                outputStream = socket.getOutputStream();
-//                                ByteArrayInputStream inputStream = new ByteArrayInputStream(baos.toByteArray());
-//                                int count = baos.toByteArray().length;
-//                                outputStream.write((count + "").getBytes());
-//                                int len;
-//                                while ((len = inputStream.read(byteBuffer)) != -1) {
-//                                    outputStream.write(byteBuffer, 0, len);
-//                                }
-//                                inputStream.close();
-//                                baos.flush();
-//                                baos.close();
 
                             byte[] imageData = baos.toByteArray();
                             // 发送图片大小
@@ -360,6 +434,24 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
         return optimalSize;
     }
 
+    // 检查IP地址是否合法
+    private boolean checkValidIP(String inputIP){
+/*        String ip = "([1-9]|[1-9]\\d|1\\d{2}|2[0-4]\\d|25[0-5])(\\.(\\d|[1-9]\\d|1\\d{2}|2[0-4]\\d|25[0-5])){3}";
+        Pattern pattern = Pattern.compile(ip);
+        Matcher matcher = pattern.matcher(ipAddress);
+        return matcher.matches();*/
+        String[] ip = inputIP.split("\\.");
+        if(ip.length != 4){
+            return false;
+        }
+        for(int i = 0; i < 4; i++){
+            int num = Integer.parseInt(ip[i]);
+            if(num < 0 || num > 255){
+                return false;
+            }
+        }
+        return true;
+    }
     //显示Toast函数
     private void displayToast(String s) {
         //Looper.prepare();
@@ -394,7 +486,7 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
             {
                 new AlertDialog.Builder(this)
                         .setTitle("关于本程序")
-                        .setMessage("本程序由西安交通大学计算机学院徐亮编写。\nEmail：brightxu18@163.com")
+                        .setMessage("本程序默认服务器端口为8888,故可能导致端口冲突;\n本程序由西安交通大学计算机学院徐亮编写。\nEmail：brightxu18@163.com")
                         .setPositiveButton
                                 (
                                         "我知道了",
