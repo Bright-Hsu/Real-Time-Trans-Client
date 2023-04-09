@@ -41,6 +41,7 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.net.Socket;
 import java.util.List;
+import java.util.concurrent.locks.ReentrantLock;
 
 public class MainActivity extends AppCompatActivity implements SurfaceHolder.Callback, Camera.PreviewCallback {
     private static final String TAG = "TestApp5";
@@ -62,6 +63,7 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
 
     private static byte byteBuffer[] = new byte[1024]; // 用于存放图片数据
 
+    private ReentrantLock lock = new ReentrantLock();
 
     private RenderScript rs;
     private ScriptIntrinsicYuvToRGB yuvToRgbIntrinsic;
@@ -262,13 +264,14 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
         try {
             if(data != null) {
                 //Log.d(TAG, "onPreviewFrame YuvImage width and height:" + size.width + "x" + size.height);
-                new Thread(()-> SyncArea.sendImage(data, format, size, socket)).start();
+                //new Thread(()-> SyncArea.sendImage(data, format, size, socket)).start();
 
-                /*
+
                 new Thread(new Runnable() {
                     @Override
                     public void run() {
                         try {
+                            lock.lock();  //获取锁
                             if (yuvType == null)
                             {
                                 yuvType = new Type.Builder(rs, Element.U8(rs)).setX(data.length);
@@ -292,7 +295,7 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
                             byte[] imageData = baos.toByteArray();
                             // 发送图片大小
                             DataOutputStream dos = new DataOutputStream(socket.getOutputStream());
-                            dos.writeInt(baos.toByteArray().length);
+                            dos.writeInt(imageData.length);
                             dos.flush();
                             // 发送图片数据
                             outputStream = socket.getOutputStream();
@@ -305,9 +308,12 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
                             // 打印错误信息
                             Log.e(TAG, "onPreviewFrame Error: " + e.getMessage());
                             e.printStackTrace();
+                        } finally {
+                            System.gc();
+                            lock.unlock();  //释放锁
                         }
                     }
-                }).start(); */
+                }).start();
                 /*
                 new Thread(new Runnable() {
                     @Override
@@ -364,7 +370,7 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
         Log.i(TAG, "initCamera: " + mCamera + " open the CAMERA_FACING_BACK");
         try {
             Camera.Parameters parameters = mCamera.getParameters(); // 获取各项参数
-            parameters.setPreviewSize(640,480);
+            parameters.setPreviewSize(1280,960);
             //parameters.setPreviewSize(640,480);
             List<Integer> frameList = parameters.getSupportedPreviewFrameRates(); // 获取支持预览帧率
             List<Camera.Size> sizeList =  parameters.getSupportedPreviewSizes(); // 获取支持预览大小
