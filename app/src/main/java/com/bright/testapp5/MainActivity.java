@@ -1,5 +1,7 @@
 package com.bright.testapp5;
 
+import static java.lang.Thread.sleep;
+
 import android.Manifest;
 import android.app.AlertDialog;
 import android.content.DialogInterface;
@@ -35,12 +37,18 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.Socket;
+import java.sql.Time;
+import java.util.LinkedList;
 import java.util.List;
+import java.util.Queue;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.locks.ReentrantLock;
 
 public class MainActivity extends AppCompatActivity implements SurfaceHolder.Callback, Camera.PreviewCallback {
@@ -61,7 +69,7 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
     private Socket socket;
     private OutputStream outputStream;
 
-    private static byte byteBuffer[] = new byte[1024]; // 用于存放图片数据
+    private static byte byteBuffer[] = new byte[1024*64]; // 用于存放图片数据的缓冲区
 
     private ReentrantLock lock = new ReentrantLock();
 
@@ -69,6 +77,9 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
     private ScriptIntrinsicYuvToRGB yuvToRgbIntrinsic;
     private Type.Builder yuvType, rgbaType;
     private Allocation in, out;
+
+    Thread socketThread = null;
+    BlockingQueue<byte[]> queue = new LinkedBlockingQueue<byte[]>();
 
 
     private static final String[] permission = new String[] {
@@ -175,7 +186,10 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
                         public void run() {
                             try {
                                 socket = new Socket(serverIP, serverPort);
+                                socket.setSendBufferSize(1024*1024*2);
                                 outputStream = socket.getOutputStream();
+                                //输出缓冲区大小
+                                Log.i(TAG, "SendBufferSize(): " + socket.getSendBufferSize() + " ReceiveBufferSize(): " + socket.getReceiveBufferSize());
                                 Log.i(TAG, "myBtn01 连接成功: " + serverIP + ":" + serverPort);
                             } catch (IOException e) {
                                 Log.e(TAG, "myBtn01 连接失败: " + e.getMessage());
@@ -219,6 +233,50 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
                     myBtn02.setText("停止传输");
                     displayToast("传输已经开始!");
                     Log.i(TAG, "myBtn02 开始传输: " + serverIP + ":" + serverPort);
+
+                    if (socketThread != null && socketThread.isAlive()) {
+                        socketThread.interrupt();
+                    }
+                    socketThread = null;
+                     socketThread = new Thread(new Runnable() {
+                        @Override
+                        public void run() {
+                            while (isSending){
+                                if (!queue.isEmpty()){
+                                    byte[] imageData = queue.poll();
+                                    try {
+                                        //获得当前时间
+                                        long startTime = System.currentTimeMillis();
+                                        // 发送图片大小
+                                        DataOutputStream dos = new DataOutputStream(socket.getOutputStream());
+                                        Log.i(TAG, "计算时间1: " + (System.currentTimeMillis()-startTime));
+                                        dos.writeInt(imageData.length);
+                                        Log.i(TAG, "计算时间2: " + (System.currentTimeMillis()-startTime));
+                                        dos.flush();
+                                        Log.i(TAG, "计算时间3: " + (System.currentTimeMillis()-startTime));
+                                        // 发送图片数据
+                                        outputStream = socket.getOutputStream();
+                                        Log.i(TAG, "计算时间4: " + (System.currentTimeMillis()-startTime));
+
+                                        ByteArrayInputStream inputStream = new ByteArrayInputStream(imageData);
+                                        int amount;
+                                        while ((amount = inputStream.read(byteBuffer)) != -1) {
+                                            outputStream.write(byteBuffer, 0, amount);
+                                        }
+                                        // outputStream.write(imageData);
+                                        Log.i(TAG, "计算时间5: " + (System.currentTimeMillis()-startTime));
+                                        outputStream.flush();
+                                        long endTime = System.currentTimeMillis();
+                                        Log.d(TAG, "队列长度: " + queue.size() + " 发送图片大小: " + imageData.length + " 发送图片耗时: " + (endTime - startTime) + "ms");
+                                    } catch (IOException e) {
+                                        e.printStackTrace();
+                                    }
+                                }
+                            }
+                            queue.clear();
+                        }
+                    });
+                    socketThread.start();
                 }
             } // 创建监听
         });
@@ -266,12 +324,40 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
                 //Log.d(TAG, "onPreviewFrame YuvImage width and height:" + size.width + "x" + size.height);
                 //new Thread(()-> SyncArea.sendImage(data, format, size, socket)).start();
 
+                try {
+                    YuvImage image = new YuvImage(data, format, size.width, size.height, null);
+                    ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                    // 设置图片质量和尺寸，将NV21格式图片压缩成Jpeg，并得到JPEG数据流
+                    if(!image.compressToJpeg(new Rect(0, 0, size.width, size.height), 80, baos)){
+                        Log.e(TAG, "onPreviewFrame Yuv Image compressToJpeg failed");
+                        return;
+                    }
 
+                    while (queue.size() > 500)
+                    {
+                        Log.d(TAG, "onPreviewFrame queue size:" + queue.size() + " free memory:" + Runtime.getRuntime().freeMemory() + " total memory:" + Runtime.getRuntime().totalMemory() + " max memory:" + Runtime.getRuntime().maxMemory());
+                        sleep(10);
+                    }
+                    byte[] imageData = baos.toByteArray();
+                    queue.add(imageData);
+                    Log.d(TAG, "onPreviewFrame jpeg size: " + imageData.length);
+                    System.gc();
+                } catch (OutOfMemoryError e) {
+                    Log.e(TAG, "queue size:" + queue.size());
+                    Log.e(TAG, "onPreviewFrame Yuv Image compressToJpeg Error: " + e.getMessage());
+                    e.printStackTrace();
+                }
+                catch (Exception e) {
+                    // 打印错误信息
+                    Log.e(TAG, "onPreviewFrame Error: " + e.getMessage());
+                    e.printStackTrace();
+                }
+
+                /*
                 new Thread(new Runnable() {
                     @Override
                     public void run() {
                         try {
-                            lock.lock();  //获取锁
                             if (yuvType == null)
                             {
                                 yuvType = new Type.Builder(rs, Element.U8(rs)).setX(data.length);
@@ -293,6 +379,7 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
                             }
 
                             byte[] imageData = baos.toByteArray();
+                            // lock.lock();  //获取锁
                             // 发送图片大小
                             DataOutputStream dos = new DataOutputStream(socket.getOutputStream());
                             dos.writeInt(imageData.length);
@@ -310,10 +397,10 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
                             e.printStackTrace();
                         } finally {
                             System.gc();
-                            lock.unlock();  //释放锁
+                            //lock.unlock();  //释放锁
                         }
                     }
-                }).start();
+                }).start();*/
                 /*
                 new Thread(new Runnable() {
                     @Override
@@ -410,6 +497,28 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
         } catch (Exception e) {
             Log.e(TAG, "initCamera preview Error: " + e.getMessage());
             e.printStackTrace();
+        }
+    }
+
+    @SuppressWarnings("deprecation")
+    private void changeCameraParameters(int width, int height, int frameRate) throws IOException {
+        if (mCamera != null) {
+            try {
+                mCamera.setPreviewCallback(null);
+                mCamera.stopPreview();
+                Camera.Parameters parameters = mCamera.getParameters(); // 获取各项参数
+                parameters.setPreviewSize(width, height);
+                parameters.setPreviewFrameRate(frameRate);
+                mCamera.setParameters(parameters); // 设置各项参数
+
+                mCamera.setPreviewDisplay(mSurfaceHolder);
+                mCamera.setDisplayOrientation(90); // 设置预览角度
+                mCamera.setPreviewCallback(this); // 设置预览回调
+                mCamera.startPreview(); // 开始预览
+            } catch (Exception e) {
+                Log.e(TAG, "changeCameraParameters Error: " + e.getMessage());
+                e.printStackTrace();
+            }
         }
     }
 
