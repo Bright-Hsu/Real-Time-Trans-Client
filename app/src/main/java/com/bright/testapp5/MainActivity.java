@@ -37,6 +37,8 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 
+import java.io.BufferedInputStream;
+import java.io.BufferedOutputStream;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
@@ -68,8 +70,9 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
     private int serverPort = 8888; // 服务器端口号
     private Socket socket;
     private OutputStream outputStream;
+    private DataOutputStream dos;
 
-    private static byte byteBuffer[] = new byte[1024*64]; // 用于存放图片数据的缓冲区
+    private static byte byteBuffer[] = new byte[1024 * 64]; // 用于存放图片数据的缓冲区
 
     private ReentrantLock lock = new ReentrantLock();
 
@@ -80,9 +83,10 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
 
     Thread socketThread = null;
     BlockingQueue<byte[]> queue = new LinkedBlockingQueue<byte[]>();
+    private long totalSize = 0;
 
 
-    private static final String[] permission = new String[] {
+    private static final String[] permission = new String[]{
             // 相机
             Manifest.permission.CAMERA,
             // 网络
@@ -117,8 +121,8 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
         yuvToRgbIntrinsic = ScriptIntrinsicYuvToRGB.create(rs, Element.U8_4(rs));
 
         // Android 6.0相机动态权限检查
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)== PackageManager.PERMISSION_GRANTED){
-        }else {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+        } else {
             ActivityCompat.requestPermissions(this, permission, 1);
         }
 
@@ -151,7 +155,7 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
         myBtn01.setOnClickListener(new Button.OnClickListener() {
             @Override
             public void onClick(View v) {
-                if(isConnecting){   //如果正在连接中
+                if (isConnecting) {   //如果正在连接中
                     isConnecting = false;
                     isSending = false;
                     myBtn01.setText("开始连接");
@@ -166,15 +170,13 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
                         e.printStackTrace();
                     }
                     Log.i(TAG, "myBtn01 断开连接: " + serverIP + ":" + serverPort);
-                }
-                else {  //如果没有连接,则开始连接
+                } else {  //如果没有连接,则开始连接
                     String inputIP = myEdit01.getText().toString();
                     if (inputIP.length() > 0 && checkValidIP(inputIP)) {
                         serverIP = inputIP;
                         // 打印输入框的输入
                         Log.i(TAG, "输入框输入的IP: " + inputIP + "serverIP: " + serverIP);
-                    }
-                    else if (inputIP.length() > 0 && !checkValidIP(inputIP)){
+                    } else if (inputIP.length() > 0 && !checkValidIP(inputIP)) {
                         displayToast("请输入正确的IP地址!");
                         // 打印输入框的输入
                         Log.i(TAG, "输入框输入的IP: " + inputIP + "serverIP: " + serverIP);
@@ -186,8 +188,9 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
                         public void run() {
                             try {
                                 socket = new Socket(serverIP, serverPort);
-                                socket.setSendBufferSize(1024*1024*2);
+                                socket.setSendBufferSize(1024 * 1024 * 2);
                                 outputStream = socket.getOutputStream();
+                                dos = new DataOutputStream(socket.getOutputStream());
                                 //输出缓冲区大小
                                 Log.i(TAG, "SendBufferSize(): " + socket.getSendBufferSize() + " ReceiveBufferSize(): " + socket.getReceiveBufferSize());
                                 Log.i(TAG, "myBtn01 连接成功: " + serverIP + ":" + serverPort);
@@ -203,8 +206,7 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
                                         displayToast("连接失败!");
                                         myBtn01.setText("开始连接");
                                         myBtn02.setText("开始传输");
-                                    }
-                                    else{
+                                    } else {
                                         displayToast("连接成功!");
                                         isConnecting = true;
                                         myBtn01.setText("断开连接");
@@ -222,13 +224,16 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
         myBtn02.setOnClickListener(new Button.OnClickListener() {
             @Override
             public void onClick(View v) {
-                if(isSending){  //如果正在传输中
+                if (isSending) {  //如果正在传输中
                     isSending = false;
                     myBtn02.setText("开始传输");
                     displayToast("传输已经停止!");
                     Log.i(TAG, "myBtn02 停止传输: " + serverIP + ":" + serverPort);
-                }
-                else {  //如果没有传输,则开始传输
+                    if (socketThread != null && socketThread.isAlive()) {
+                        socketThread.interrupt();
+                    }
+                    socketThread = null;
+                } else {  //如果没有传输,则开始传输
                     isSending = true;
                     myBtn02.setText("停止传输");
                     displayToast("传输已经开始!");
@@ -238,36 +243,41 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
                         socketThread.interrupt();
                     }
                     socketThread = null;
-                     socketThread = new Thread(new Runnable() {
+                    socketThread = new Thread(new Runnable() {
                         @Override
                         public void run() {
-                            while (isSending){
-                                if (!queue.isEmpty()){
+                            while (isSending) {
+                                if (!queue.isEmpty()) {
                                     byte[] imageData = queue.poll();
                                     try {
                                         //获得当前时间
                                         long startTime = System.currentTimeMillis();
                                         // 发送图片大小
-                                        DataOutputStream dos = new DataOutputStream(socket.getOutputStream());
-                                        Log.i(TAG, "计算时间1: " + (System.currentTimeMillis()-startTime));
+                                        //dos = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
+                                        Log.i(TAG, "计算时间1: " + (System.currentTimeMillis() - startTime));
                                         dos.writeInt(imageData.length);
-                                        Log.i(TAG, "计算时间2: " + (System.currentTimeMillis()-startTime));
+                                        Log.i(TAG, "计算时间2: " + (System.currentTimeMillis() - startTime));
                                         dos.flush();
-                                        Log.i(TAG, "计算时间3: " + (System.currentTimeMillis()-startTime));
+                                        Log.i(TAG, "计算时间3: " + (System.currentTimeMillis() - startTime));
                                         // 发送图片数据
-                                        outputStream = socket.getOutputStream();
-                                        Log.i(TAG, "计算时间4: " + (System.currentTimeMillis()-startTime));
+                                        dos.write(imageData);
+                                        //outputStream = socket.getOutputStream();
+                                        Log.i(TAG, "计算时间4: " + (System.currentTimeMillis() - startTime));
 
-                                        ByteArrayInputStream inputStream = new ByteArrayInputStream(imageData);
-                                        int amount;
-                                        while ((amount = inputStream.read(byteBuffer)) != -1) {
-                                            outputStream.write(byteBuffer, 0, amount);
-                                        }
-                                        // outputStream.write(imageData);
-                                        Log.i(TAG, "计算时间5: " + (System.currentTimeMillis()-startTime));
-                                        outputStream.flush();
+//                                        ByteArrayInputStream inputStream = new ByteArrayInputStream(imageData);
+//                                        int amount;
+//                                        while ((amount = inputStream.read(byteBuffer)) != -1) {
+//                                            outputStream.write(byteBuffer, 0, amount);
+//                                        }
+
+                                        //socket.getOutputStream().write(imageData);
+                                        //Log.i(TAG, "计算时间5: " + (System.currentTimeMillis() - startTime));
+                                        socket.getOutputStream().flush();
+                                        dos.flush();
                                         long endTime = System.currentTimeMillis();
                                         Log.d(TAG, "队列长度: " + queue.size() + " 发送图片大小: " + imageData.length + " 发送图片耗时: " + (endTime - startTime) + "ms");
+                                        totalSize += imageData.length;
+                                        Log.d(TAG, "totalSize:" + totalSize);
                                     } catch (IOException e) {
                                         e.printStackTrace();
                                     }
@@ -320,7 +330,7 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
         Camera.Size size = camera.getParameters().getPreviewSize();
         int format = camera.getParameters().getPreviewFormat();
         try {
-            if(data != null) {
+            if (data != null) {
                 //Log.d(TAG, "onPreviewFrame YuvImage width and height:" + size.width + "x" + size.height);
                 //new Thread(()-> SyncArea.sendImage(data, format, size, socket)).start();
 
@@ -328,13 +338,12 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
                     YuvImage image = new YuvImage(data, format, size.width, size.height, null);
                     ByteArrayOutputStream baos = new ByteArrayOutputStream();
                     // 设置图片质量和尺寸，将NV21格式图片压缩成Jpeg，并得到JPEG数据流
-                    if(!image.compressToJpeg(new Rect(0, 0, size.width, size.height), 80, baos)){
+                    if (!image.compressToJpeg(new Rect(0, 0, size.width, size.height), 80, baos)) {
                         Log.e(TAG, "onPreviewFrame Yuv Image compressToJpeg failed");
                         return;
                     }
 
-                    while (queue.size() > 500)
-                    {
+                    while (queue.size() > 500) {
                         Log.d(TAG, "onPreviewFrame queue size:" + queue.size() + " free memory:" + Runtime.getRuntime().freeMemory() + " total memory:" + Runtime.getRuntime().totalMemory() + " max memory:" + Runtime.getRuntime().maxMemory());
                         sleep(10);
                     }
@@ -346,8 +355,7 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
                     Log.e(TAG, "queue size:" + queue.size());
                     Log.e(TAG, "onPreviewFrame Yuv Image compressToJpeg Error: " + e.getMessage());
                     e.printStackTrace();
-                }
-                catch (Exception e) {
+                } catch (Exception e) {
                     // 打印错误信息
                     Log.e(TAG, "onPreviewFrame Error: " + e.getMessage());
                     e.printStackTrace();
@@ -457,10 +465,10 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
         Log.i(TAG, "initCamera: " + mCamera + " open the CAMERA_FACING_BACK");
         try {
             Camera.Parameters parameters = mCamera.getParameters(); // 获取各项参数
-            parameters.setPreviewSize(1280,960);
+            parameters.setPreviewSize(640, 480);
             //parameters.setPreviewSize(640,480);
             List<Integer> frameList = parameters.getSupportedPreviewFrameRates(); // 获取支持预览帧率
-            List<Camera.Size> sizeList =  parameters.getSupportedPreviewSizes(); // 获取支持预览大小
+            List<Camera.Size> sizeList = parameters.getSupportedPreviewSizes(); // 获取支持预览大小
             List<Camera.Size> pictureList = parameters.getSupportedPictureSizes(); // 获取支持保存的图片尺寸
             // 用一行Log输出支持的帧率列表
             StringBuilder sb = new StringBuilder();
@@ -550,23 +558,24 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
     }
 
     // 检查IP地址是否合法
-    private boolean checkValidIP(String inputIP){
+    private boolean checkValidIP(String inputIP) {
 /*        String ip = "([1-9]|[1-9]\\d|1\\d{2}|2[0-4]\\d|25[0-5])(\\.(\\d|[1-9]\\d|1\\d{2}|2[0-4]\\d|25[0-5])){3}";
         Pattern pattern = Pattern.compile(ip);
         Matcher matcher = pattern.matcher(ipAddress);
         return matcher.matches();*/
         String[] ip = inputIP.split("\\.");
-        if(ip.length != 4){
+        if (ip.length != 4) {
             return false;
         }
-        for(int i = 0; i < 4; i++){
+        for (int i = 0; i < 4; i++) {
             int num = Integer.parseInt(ip[i]);
-            if(num < 0 || num > 255){
+            if (num < 0 || num > 255) {
                 return false;
             }
         }
         return true;
     }
+
     //显示Toast函数
     private void displayToast(String s) {
         //Looper.prepare();
